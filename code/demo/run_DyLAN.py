@@ -1,61 +1,102 @@
 import ast
 import json
 import os
-import openai
+# import openai
 import random
 import sys
+import threading
+import concurrent.futures
 from prettytable import PrettyTable
-from LLMLP import LLMLP
+from LLMLP import LLMLP  # Assuming LLMLP is your custom class
 from utils import *
 
-# openai.api_key =
-# openai.api_base =
-# openai.api_type =
-# openai.api_version =
+# Configure OpenAI API (replace with your actual credentials)
+# openai.api_key = "YOUR_API_KEY"
+# openai.api_base = "YOUR_API_BASE"  # If using a different base URL
+# openai.api_type = "azure"  # Or "openai" if not using Azure
+# openai.api_version = "YOUR_API_VERSION"
 
-# Put your query here
-QUERY = r"""What 8 letter word can have a letter taken away and it still makes a word. Take another letter away and it still makes a word. Keep on doing that until you have one letter left. What is the word?"""
-
+# Default values (can be overridden per question)
 EXP_NAME = "trial_1"
 MODEL = "chatgpt0301"
-
 ACTIVATION = "listwise"
 TYPE = "open-ended"
 DIR_NAME = "trial"
 
-# Here are the roles of the participants in the LLM-agent collaboration
-# See prompt_lib.ROLE_MAP for the full list of roles
-ROLES = ["Assistant", "Assistant", "Assistant", "Assistant"]
+# Roles for the LLM agents
+if sys.argv[2] == "multi": 
+    ROLES = ["Historian", "Mathematician", "Psychologist", "Programmer"]
+else:
+    ROLES = ["Assistant", "Assistant", "Assistant", "Assistant"]
 
 def set_rd_seed(seed):
     random.seed(seed)
 
-def main():
-    set_rd_seed(0)
-    assert len(ROLES) > 0
+def process_question(question_data, output_filename="output2.json"):
+    """
+    Processes a single question using LLMLP and saves the results.
+    """
+    set_rd_seed(0)  # You might want to use a different seed per thread or question
 
-    llmlp = LLMLP(MODEL, len(ROLES), ROLES, 3, ACTIVATION, TYPE, MODEL)
+    question = question_data['question']
+    skill = question_data.get('skill', [])
+    print(f"\nProcessing question: {question}\n")
+
+    # Get parameters from question_data, or use defaults
+    roles = question_data.get('roles', ROLES)
+    model = question_data.get('model', MODEL)
+    activation = question_data.get('activation', ACTIVATION)
+    type_ = question_data.get('type', TYPE)
+    num_rounds = question_data.get('num_rounds',3)
+
+    llmlp = LLMLP(model, len(roles), roles, num_rounds, activation, type_, model)
 
     llmlp.zero_grad()
-    res, resp_cnt, completions, prompt_tokens, completion_tokens = llmlp.forward(QUERY)
+    res, resp_cnt, completions, prompt_tokens, completion_tokens = llmlp.forward(question)
     imp_score = llmlp.backward(res)
-    imp_score = [[imp_score[idx] for idx in range(len(ROLES)*rid, len(ROLES)*(rid+1))] for rid in range(3)]
+    imp_score = [[imp_score[idx] for idx in range(len(roles) * rid, len(roles) * (rid + 1))] for rid in range(num_rounds)]
 
     pt = PrettyTable()
-    pt.add_column("Round", ROLES)
-    for rid in range(3):
-        responses = [(completions[idx][rid] if completions[idx][rid] is not None else "No response.") for idx in range(len(ROLES))]
-        pt.add_column(str(rid+1), responses, "l")
+    pt.add_column("Round", roles)
+    for rid in range(num_rounds):
+        responses = [(completions[idx][rid] if completions[idx][rid] is not None else "No response.") for idx in range(len(roles))]
+        pt.add_column(str(rid + 1), responses, "l")
 
-    print(r"Query: {}".format(QUERY))
-    print(r"#API calls: {}".format(resp_cnt))
-    print(r"Prompt Tokens: {}".format(prompt_tokens))
-    print(r"Completion Tokens: {}".format(completion_tokens))
-    print(pt)
-    print(r"Final Answer: {}".format(res))
-    print()
-    print(r"Agent Importance Scores: {}".format([sum(imp_score[rid][idx] for rid in range(3)) for idx in range(len(ROLES))]))
+    print(f"#API calls: {resp_cnt}")
+    print(f"Final Answer: {res}")
 
+    ans = {
+        "question": question,
+        "skill": skill,
+        "summarized_answer": res,
+        "round":1,
+        "prompt_tokens": prompt_tokens,
+        "api_calls": resp_cnt,
+        "completion_tokens": completion_tokens,
+        "rounds": {f"round_{rid+1}": [completions[idx][rid] for idx in range(len(roles))] for rid in range(num_rounds)}
+    }
+
+    with threading.Lock():  # Use a lock to protect file access
+        with open(output_filename, 'a') as f:
+            json.dump(ans, f)
+            f.write('\n')
+
+def read_json_file(file_path):
+    with open(file_path) as f:
+        data = json.load(f)
+    return data
+
+def main(file_path):
+    data = read_json_file(file_path)
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Submit each question to the thread pool
+        futures = [executor.submit(process_question, question_data) for question_data in data]
+
+        # Wait for all tasks to complete
+        concurrent.futures.wait(futures)
+
+    print("All questions processed.")
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1])

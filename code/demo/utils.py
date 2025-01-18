@@ -8,6 +8,10 @@ import openai
 import backoff
 from openai.error import RateLimitError, APIError, ServiceUnavailableError, APIConnectionError, Timeout
 
+import google.generativeai as genai
+genai.configure(api_key="API-KEY")
+model_google = genai.GenerativeModel('gemini-1.5-flash')
+
 
 class OutOfQuotaException(Exception):
     "Raised when the key exceeded the current quota"
@@ -327,13 +331,10 @@ def extract_math_answer(pred_str):
 @backoff.on_exception(backoff.expo, (RateLimitError, APIError, ServiceUnavailableError, APIConnectionError, Timeout), max_tries=20)
 def generate_answer(answer_context, model):
     try:
-        completion = openai.ChatCompletion.create(
-                #   model=model,
-                  engine=model,
-                  messages=answer_context,
-                  temperature=TEMPERATURE,
-                  max_tokens=MAX_TOKENS,
-                  n=1)
+        answer_context='\n'.join([i['content'] for i in answer_context])
+        time.sleep(3)
+        completion = model_google.generate_content(answer_context)
+
     except RateLimitError as e:
         if "You exceeded your current quota, please check your plan and billing details" in e.user_message:
             raise OutOfQuotaException(openai.api_key)
@@ -342,7 +343,7 @@ def generate_answer(answer_context, model):
         else:
             raise e
 
-    return completion["choices"][0]["message"]["content"], completion["usage"]["prompt_tokens"], completion["usage"]["completion_tokens"]
+    return completion.text, 0, 0
 
 def parse_single_choice(reply):
     pattern = r'\(([ABCDabcd])\)'
